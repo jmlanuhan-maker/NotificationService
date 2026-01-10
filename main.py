@@ -110,7 +110,7 @@ app.add_middleware(
 async def startup_event():
     logger.info("🚀 Notification Service started successfully")
     logger.info("📡 WebSocket endpoint: ws://localhost:9004/ws/notifications")
-    logger.info("📧 Email API endpoint: http://localhost:9004/email/")
+    logger.info("📧 Email API endpoint: https://notificationservice-1jp5.onrender.com")
 
 # --- Shutdown Event ---
 @app.on_event("shutdown")
