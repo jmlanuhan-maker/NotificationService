@@ -97,10 +97,8 @@ app.include_router(router_email)  # NEW: Email notifications
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:4001",
-        "http://127.0.0.1:4001",
-        "http://localhost:3000",  # Add your frontend URLs
-        "http://127.0.0.1:3000"
+        "https://bleu-pos-tau.vercel.app",
+        "https://bleu-ims-beta.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],

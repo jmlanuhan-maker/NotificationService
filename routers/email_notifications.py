@@ -23,7 +23,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
 SENDER_NAME = os.getenv("SENDER_NAME", "Bleu Bean Cafe")
-AUTH_API_BASE_URL = os.getenv("AUTH_API_BASE_URL", "http://127.0.0.1:4000")
+AUTH_API_BASE_URL = os.getenv("AUTH_API_BASE_URL", "https://authservices-npr8.onrender.com")
 DELIVERY_FEE = 50.0  # Delivery fee constant
 
 # --- Pydantic Models ---
