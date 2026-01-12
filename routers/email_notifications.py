@@ -49,6 +49,7 @@ class EmailNotificationRequest(BaseModel):
     delivery_address: Optional[str] = None
     phone_number: Optional[str] = None
     reference_number: Optional[str] = None
+    
 
 # --- Router ---
 router_email = APIRouter(prefix="/email", tags=["Email Notifications"])
