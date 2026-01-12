@@ -8,7 +8,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status, Header
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -37,9 +37,17 @@ class OrderItem(BaseModel):
     quantity: int
     price: float
     addons: List[AddonItem] = []
+    promo_name: Optional[str] = None  # Promotion name if applied
+    promo_type: Optional[str] = None  # percentage, fixed, bogo
+    promo_value: Optional[float] = None  # Discount percentage or amount
+    promo_discount: Optional[float] = None  # Actual discount amount in pesos
 
 class EmailNotificationRequest(BaseModel):
+    model_config = ConfigDict(extra='ignore')  # Ignore extra fields from frontend
+    
+    customer_id: Optional[int] = None  # optional, can use customer_name as fallback
     customer_name: str
+    customer_email: Optional[str] = None  # optional, direct email if available
     order_id: str
     order_type: str
     status: str
@@ -49,44 +57,65 @@ class EmailNotificationRequest(BaseModel):
     delivery_address: Optional[str] = None
     phone_number: Optional[str] = None
     reference_number: Optional[str] = None
-    
+    delivery_fee: Optional[float] = None  # Actual delivery fee from order (if null, will use order_type to determine)
 
 # --- Router ---
 router_email = APIRouter(prefix="/email", tags=["Email Notifications"])
 
 # --- Helper Function to Fetch Email ---
-async def fetch_user_email(username: str, auth_token: str) -> Optional[str]:
-    """Fetch user email from auth service"""
+async def fetch_user_email(user_id: Optional[int] = None, username: Optional[str] = None, auth_token: str = None) -> Optional[str]:
+    """Fetch user email from auth service using either user_id or username"""
+    if not auth_token:
+        return None
+    
+    if not user_id and not username:
+        return None
+    
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{AUTH_API_BASE_URL}/users/email",
-                params={"username": username},
-                headers={"Authorization": f"Bearer {auth_token}"},
-                timeout=10.0
-            )
-            
+            if user_id:
+                # Try fetching by user_id first
+                response = await client.get(
+                    f"{AUTH_API_BASE_URL}/users/email/by-id",
+                    params={"user_id": user_id},
+                    headers={"Authorization": f"Bearer {auth_token}"},
+                    timeout=10.0
+                )
+            else:
+                # Fallback to fetching by username
+                response = await client.get(
+                    f"{AUTH_API_BASE_URL}/users/email",
+                    params={"username": username},
+                    headers={"Authorization": f"Bearer {auth_token}"},
+                    timeout=10.0
+                )
+
             if response.status_code == 200:
                 data = response.json()
                 email = data.get("email")
-                logger.info(f"✅ Successfully fetched email for user {username}: {email}")
+                identifier = user_id if user_id else username
+                logger.info(f"✅ Successfully fetched email for {identifier}: {email}")
                 return email
             else:
-                logger.error(f"❌ Failed to fetch email for user {username}: {response.status_code}")
+                identifier = user_id if user_id else username
+                logger.error(f"❌ Failed to fetch email for {identifier}: {response.status_code}")
                 return None
                 
     except httpx.TimeoutException:
-        logger.error(f"❌ Timeout fetching email for user {username}")
+        identifier = user_id if user_id else username
+        logger.error(f"❌ Timeout fetching email for {identifier}")
         return None
     except Exception as e:
-        logger.error(f"❌ Error fetching email for user {username}: {e}")
+        identifier = user_id if user_id else username
+        logger.error(f"❌ Error fetching email for {identifier}: {e}")
         return None
 
 # --- Helper Function to Calculate Costs ---
 def calculate_order_breakdown(data: EmailNotificationRequest):
-    """Calculate subtotal, add-ons, delivery fee, and final total"""
+    """Calculate subtotal, add-ons, delivery fee, discount, and final total"""
     subtotal = 0.0
     addons_total = 0.0
+    discount_total = 0.0
     
     for item in data.items:
         # Calculate base item cost
@@ -96,19 +125,29 @@ def calculate_order_breakdown(data: EmailNotificationRequest):
         if item.addons:
             for addon in item.addons:
                 addons_total += addon.price
+        
+        # Calculate discount from promotions
+        if item.promo_discount and item.promo_discount > 0:
+            discount_total += item.promo_discount
     
-    # Determine if delivery fee applies
+    # Use provided delivery_fee or determine based on order_type
     is_delivery = data.order_type.lower() == "delivery"
-    delivery_fee = DELIVERY_FEE if is_delivery else 0.0
+    if data.delivery_fee is not None:
+        # Use the delivery fee provided from the frontend
+        delivery_fee = float(data.delivery_fee)
+    else:
+        # Fallback: Use the hardcoded constant if not provided
+        delivery_fee = DELIVERY_FEE if is_delivery else 0.0
     
-    # Calculate final total
-    final_total = subtotal + addons_total + delivery_fee
+    # Calculate final total (including discounts)
+    final_total = subtotal + addons_total + delivery_fee - discount_total
     
     return {
         "subtotal": subtotal,
         "addons_total": addons_total,
+        "discount_total": discount_total,
         "delivery_fee": delivery_fee,
-        "final_total": final_total,
+        "final_total": max(final_total, 0),  # Ensure final total doesn't go negative
         "is_delivery": is_delivery
     }
 
@@ -126,10 +165,14 @@ def create_order_accepted_email(data: EmailNotificationRequest) -> str:
             addon_names = [f"{addon.addon_name}" for addon in item.addons]
             addons_text = f"<br><small style='color: #666; padding-left: 20px;'>with: {', '.join(addon_names)}</small>"
         
+        promo_text = ""
+        if item.promo_name and item.promo_discount and item.promo_discount > 0:
+            promo_text = f"<br><small style='color: #28a745; padding-left: 20px; font-weight: bold;'>✓ {item.promo_name}: -₱{item.promo_discount:.2f}</small>"
+        
         items_html += f"""
         <tr>
             <td style='padding: 8px; border-bottom: 1px solid #eee;'>
-                {item.name}{addons_text}
+                {item.name}{addons_text}{promo_text}
             </td>
             <td style='padding: 8px; border-bottom: 1px solid #eee; text-align: center;'>{item.quantity}</td>
             <td style='padding: 8px; border-bottom: 1px solid #eee; text-align: right;'>₱{item.price:.2f}</td>
@@ -210,6 +253,7 @@ def create_order_accepted_email(data: EmailNotificationRequest) -> str:
                         <span>₱{breakdown['subtotal']:.2f}</span>
                     </div>
                     {f"<div class='total-row'><span>Add-ons:</span><span>+ ₱{breakdown['addons_total']:.2f}</span></div>" if breakdown['addons_total'] > 0 else ""}
+                    {f"<div class='total-row' style='color: #28a745;'><span>Discount:</span><span>- ₱{breakdown['discount_total']:.2f}</span></div>" if breakdown['discount_total'] > 0 else ""}
                     {f"<div class='total-row'><span>Delivery Fee:</span><span>+ ₱{breakdown['delivery_fee']:.2f}</span></div>" if breakdown['is_delivery'] else ""}
                     <div class='total-row final'>
                         <span>Total Amount:</span>
@@ -286,7 +330,12 @@ def create_order_update_email(data: EmailNotificationRequest) -> str:
         if item.addons:
             addon_names = [f"{addon.addon_name}" for addon in item.addons]
             addons_text = f" (with: {', '.join(addon_names)})"
-        items_summary += f"<li>{item.name}{addons_text} - Qty: {item.quantity}</li>"
+        
+        promo_text = ""
+        if item.promo_name and item.promo_discount and item.promo_discount > 0:
+            promo_text = f" <strong style='color: #28a745;'>✓ {item.promo_name}: -₱{item.promo_discount:.2f}</strong>"
+        
+        items_summary += f"<li>{item.name}{addons_text}{promo_text} - Qty: {item.quantity}</li>"
     
     html = f"""
     <!DOCTYPE html>
@@ -341,6 +390,7 @@ def create_order_update_email(data: EmailNotificationRequest) -> str:
                             <span>₱{breakdown['subtotal']:.2f}</span>
                         </div>
                         {f"<div class='total-row'><span>Add-ons:</span><span>+ ₱{breakdown['addons_total']:.2f}</span></div>" if breakdown['addons_total'] > 0 else ""}
+                        {f"<div class='total-row' style='color: #28a745;'><span>Discount:</span><span>- ₱{breakdown['discount_total']:.2f}</span></div>" if breakdown['discount_total'] > 0 else ""}
                         {f"<div class='total-row'><span>Delivery Fee:</span><span>+ ₱{breakdown['delivery_fee']:.2f}</span></div>" if breakdown['is_delivery'] else ""}
                         <div class='total-row final'>
                             <span>Total:</span>
@@ -410,7 +460,7 @@ async def send_email(to_email: str, subject: str, html_content: str) -> bool:
     status_code=status.HTTP_200_OK,
     summary="Send email when order is accepted"
 )
-async def send_order_accepted_email(request: EmailNotificationRequest, authorization: str = Header(None)):
+async def send_order_accepted_email(request: EmailNotificationRequest, authorization: Optional[str] = Header(None)):
     """Send email notification when order is accepted (PENDING → PREPARING)"""
     try:
         if not authorization or not authorization.startswith("Bearer "):
@@ -422,9 +472,18 @@ async def send_order_accepted_email(request: EmailNotificationRequest, authoriza
         auth_token = authorization.replace("Bearer ", "")
         
         logger.info(f"📧 Attempting to send order accepted email for order {request.order_id}")
+        logger.info(f"   Delivery Fee from request: {request.delivery_fee}")
+        logger.info(f"   Order Type: {request.order_type}")
         
-        # Fetch email from auth service using customer_name as username
-        user_email = await fetch_user_email(request.customer_name, auth_token)
+        # Use customer_email if provided, otherwise fetch from auth service
+        user_email = request.customer_email
+        if not user_email:
+            user_email = await fetch_user_email(
+                user_id=request.customer_id,
+                username=request.customer_name,
+                auth_token=auth_token
+            )
+
         
         if not user_email:
             logger.warning(f"⚠️ No email found for customer {request.customer_name}, skipping email notification")
@@ -470,7 +529,7 @@ async def send_order_accepted_email(request: EmailNotificationRequest, authoriza
     status_code=status.HTTP_200_OK,
     summary="Send email when order status is updated"
 )
-async def send_order_update_email(request: EmailNotificationRequest, authorization: str = Header(None)):
+async def send_order_update_email(request: EmailNotificationRequest, authorization: Optional[str] = Header(None)):
     """Send email notification when order status changes"""
     try:
         if not authorization or not authorization.startswith("Bearer "):
@@ -483,8 +542,14 @@ async def send_order_update_email(request: EmailNotificationRequest, authorizati
         
         logger.info(f"📧 Attempting to send order update email for order {request.order_id} (Status: {request.status})")
         
-        # Fetch email from auth service using customer_name as username
-        user_email = await fetch_user_email(request.customer_name, auth_token)
+        # Use customer_email if provided, otherwise fetch from auth service
+        user_email = request.customer_email
+        if not user_email:
+            user_email = await fetch_user_email(
+                user_id=request.customer_id,
+                username=request.customer_name,
+                auth_token=auth_token
+            )
         
         if not user_email:
             logger.warning(f"⚠️ No email found for customer {request.customer_name}, skipping email notification")
