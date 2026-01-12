@@ -97,7 +97,7 @@ app.include_router(router_email)  # NEW: Email notifications
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://bleu-pos-tau.vercel.app/",
+        "https://bleu-pos-tau.vercel.app",
         "https://bleu-ims-beta.vercel.app",
         ""
     ],
